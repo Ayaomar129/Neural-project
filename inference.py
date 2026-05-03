@@ -1,72 +1,52 @@
-import argparse
-import os
-
 import cv2
 import easyocr
 from ultralytics import YOLO
+import os
 
+model = YOLO('best.pt')
 
-def parse_args():
-    parser = argparse.ArgumentParser(description='License plate detection + OCR inference')
-    parser.add_argument('--weights', default='runs/train/exp/weights/best.pt', help='trained weights path')
-    parser.add_argument('--source', default='0', help='video source: camera index or path to video/image file')
-    parser.add_argument('--device', default='0', help="device id or 'cpu'")
-    parser.add_argument('--conf', type=float, default=0.25, help='detection confidence threshold')
-    return parser.parse_args()
+reader = easyocr.Reader(['en'])
 
+def run_inference(source_path):
+    # قراءة الصورة أو الفيديو
+    results = model(source_path)
 
-def draw_annotations(frame, box, text, score):
-    x1, y1, x2, y2 = [int(v) for v in box]
-    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-    label = f'{text} ({score:.2f})' if text else f'plate ({score:.2f})'
-    cv2.putText(frame, label, (x1, max(y1 - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    for result in results:
+        img = result.orig_img.copy()
+        
+        for box in result.boxes:
+            # إحداثيات المربع (x1, y1, x2, y2)
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            conf = box.conf[0] # نسبة التأكد
+            
+            if conf > 0.4: # لو الموديل متأكد بنسبة أكتر من 40%
+                # 1. قص صورة اللوحة
+                plate_crop = img[y1:y2, x1:x2]
+                
+                # 2. قراءة النص من الجزء المقصوص
+                # paragraph=True بتساعد في تجميع الحروف مع بعضها
+                ocr_result = reader.readtext(plate_crop, detail=0) # بتطلع النصوص بس بدون إحداثيات أو نسب تأكد
+                
+                if ocr_result:
+                    plate_text = " ".join(ocr_result).upper()
+                    print(f"Detected Plate: {plate_text} (Confidence: {conf:.2f})")
+                    
+                    # 3. رسم المربع وكتابة النص على الصورة الأصلية للعرض
+                    cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 3)
+                    cv2.putText(img, plate_text, (x1, y1 - 10), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
+        # عرض النتيجة
+        cv2.imshow('Final Result', img)
+        cv2.waitKey(0) # دوسي أي زرار في الكيبورد عشان يقفل الصورة
 
-def run_inference(args):
-    if args.source.isdigit():
-        source = int(args.source)
-    else:
-        source = args.source
+# --- تشغيل الكود ---
+# حطي مسار أي صورة عندك للتجربة هنا
+image_to_test = 'D:\\Neural project\\dataset\\images\\val\\video5_360.jpg'
 
-    print(f'Loading model from {args.weights}')
-    model = YOLO(args.weights)
-    reader = easyocr.Reader(['en'], gpu=(args.device != 'cpu'))
+if os.path.exists(image_to_test):
+    run_inference(image_to_test)
+else:
+    print(f"خطأ: الصورة {image_to_test} مش موجودة، تأكدي من المسار!")
 
-    cap = cv2.VideoCapture(source)
-    if not cap.isOpened():
-        raise RuntimeError(f'Unable to open source: {args.source}')
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        results = model(frame, conf=args.conf, device=args.device, stream=True)
-        for result in results:
-            if not hasattr(result, 'boxes') or len(result.boxes) == 0:
-                continue
-            boxes = result.boxes.data.cpu().numpy()
-            for box in boxes:
-                x1, y1, x2, y2, score, cls = box
-                x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-                crop = frame[y1:y2, x1:x2]
-                if crop.size == 0:
-                    continue
-                texts = reader.readtext(crop, detail=0, paragraph=False)
-                plate_text = ' '.join(texts).strip() if texts else ''
-                draw_annotations(frame, (x1, y1, x2, y2), plate_text, score)
-
-        cv2.imshow('LPR Inference', frame)
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            break
-
-    cap.release()
-    cv2.destroyAllWindows()
-
-
-if __name__ == '__main__':
-    args = parse_args()
-    if not os.path.exists(args.weights):
-        raise FileNotFoundError(f'Weights not found: {args.weights}')
-    run_inference(args)
+cv2.destroyAllWindows()
